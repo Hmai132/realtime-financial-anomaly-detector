@@ -6,82 +6,160 @@ import plotly.graph_objects as go
 from datetime import datetime
 import time
 
-# Thiết lập giao diện
+
 st.set_page_config(
-    page_title="Real-Time Anomaly Detection Engine",
+    page_title="Fintech Anomaly Detection System",
     page_icon="⚡",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Khởi tạo dữ liệu lưu trữ
-if "history" not in st.session_state:
-    st.session_state.history = []
+st.markdown("""
+<style>
+    div[data-testid="column"]:nth-of-type(4) div[data-testid="stMetricValue"] > div {
+        font-size: 1.45rem !important;
+        white-space: nowrap !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-st.title("⚡ Real-Time Statistical Anomaly Detector")
-st.caption("Hệ thống phát hiện bất thường thị trường theo thời gian thực (Z-Score & Bollinger Bands)")
+if "market_data" not in st.session_state:
+    st.session_state.market_data = []
 
-# Thanh điều khiển bên trái
+st.title("⚡ Real-Time Financial Telemetry & Anomaly Detector")
+st.caption("Hệ thống kiểm định Z-Score, dải Bollinger Bands và giám sát biến động dữ liệu trực tiếp qua Public API")
+
 with st.sidebar:
-    st.header("⚙️ Tham số phân tích")
-    window_size = st.slider("Cửa sổ trượt (Rolling Window)", 5, 30, 10)
-    k_factor = st.slider("Ngưỡng cảnh báo (|Z| > k)", 1.0, 3.0, 1.8, step=0.1)
-    refresh_rate = st.slider("Tần suất quét API (giây)", 2, 8, 3)
+    st.header("⚙️ Cấu hình thuật toán")
+    window_size = st.slider("Cửa sổ trượt (Window N)", min_value=5, max_value=30, value=12)
+    k_threshold = st.slider("Ngưỡng độ lệch (|Z| > k)", min_value=1.0, max_value=3.0, value=1.8, step=0.1)
+    refresh_rate = st.slider("Chu kỳ quét API (giây)", min_value=2, max_value=10, value=3)
+    
     st.markdown("---")
-    st.latex(r"Z = \frac{x_t - \mu}{\sigma}")
+    with st.expander("📖 Cơ sở lý thuyết & Mô hình", expanded=True):
+        st.markdown("**1. Công thức chuẩn hóa Z-Score:**")
+        st.latex(r"Z_t = \frac{x_t - \mu_t}{\sigma_t}")
+        st.markdown("""
+        * $\mu_t$: Trung bình động ($SMA_N$)
+        * $\sigma_t$: Độ lệch chuẩn động ($STD_N$)
+        """)
+        st.markdown("**2. Điều kiện kích hoạt cảnh báo:**")
+        st.info("Kích hoạt cảnh báo khi giá trị tuyệt đối $|Z_t| > k$ (vượt ngoài dải biên Bollinger Bands).")
 
-# Lấy dữ liệu trực tiếp qua API CoinGecko
-def fetch_live_price():
+def get_live_market_data():
     url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_vol=true"
     try:
-        r = requests.get(url, timeout=2.5).json()
-        return float(r["bitcoin"]["usd"]), float(r["bitcoin"]["usd_24h_vol"])
-    except:
-        prev = st.session_state.history[-1]["price"] if st.session_state.history else 65000.0
-        return prev + np.random.normal(0, 15), 35000000000.0
+        res = requests.get(url, timeout=2.5).json()
+        price = float(res["bitcoin"]["usd"])
+        vol = float(res["bitcoin"]["usd_24h_vol"])
+        return price, vol
+    except Exception:
+        prev_price = st.session_state.market_data[-1]["Price"] if st.session_state.market_data else 65000.0
+        return float(prev_price + np.random.normal(0, 8)), 32000000000.0
 
-current_p, current_vol = fetch_live_price()
-current_t = datetime.now().strftime("%H:%M:%S")
+current_price, current_vol = get_live_market_data()
+current_timestamp = datetime.now().strftime("%H:%M:%S")
 
-st.session_state.history.append({
-    "time": current_t,
-    "price": current_p,
-    "volume": current_vol
+st.session_state.market_data.append({
+    "Timestamp": current_timestamp,
+    "Price": current_price,
+    "Volume_24h": current_vol
 })
 
-if len(st.session_state.history) > 35:
-    st.session_state.history.pop(0)
+if len(st.session_state.market_data) > 40:
+    st.session_state.market_data.pop(0)
 
-df = pd.DataFrame(st.session_state.history)
+df = pd.DataFrame(st.session_state.market_data)
 
-# Tính toán khoa học: Bollinger Bands & Z-Score
-df["SMA"] = df["price"].rolling(window=window_size, min_periods=1).mean()
-df["STD"] = df["price"].rolling(window=window_size, min_periods=1).std().fillna(0)
-df["Upper_Band"] = df["SMA"] + (k_factor * df["STD"])
-df["Lower_Band"] = df["SMA"] - (k_factor * df["STD"])
-df["Z_Score"] = (df["price"] - df["SMA"]) / np.where(df["STD"] == 0, 1, df["STD"])
-df["Is_Anomaly"] = df["Z_Score"].abs() > k_factor
+df["SMA"] = df["Price"].rolling(window=window_size, min_periods=1).mean()
+df["STD"] = df["Price"].rolling(window=window_size, min_periods=1).std().fillna(0)
+df["Upper_Band"] = df["SMA"] + (k_threshold * df["STD"])
+df["Lower_Band"] = df["SMA"] - (k_threshold * df["STD"])
+df["Z_Score"] = (df["Price"] - df["SMA"]) / np.where(df["STD"] == 0, 1.0, df["STD"])
+df["Is_Anomaly"] = df["Z_Score"].abs() > k_threshold
+df["Delta"] = df["Price"].diff().fillna(0)
 
-# Thẻ KPI
 latest = df.iloc[-1]
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Giá Bitcoin (USD)", f"${latest['price']:,.2f}")
-c2.metric("Trung bình trượt SMA", f"${latest['SMA']:,.2f}")
-c3.metric("Độ biến động σ", f"±{latest['STD']:.2f}")
-c4.metric("Trạng thái", "🚨 BẤT THƯỜNG" if latest["Is_Anomaly"] else "✅ BÌNH THƯỜNG")
+c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.1, 1.2])
 
-# Vẽ biểu đồ khoa học Bollinger Bands
+c1.metric("Giá Bitcoin (USD)", f"${latest['Price']:,.2f}", delta=f"{latest['Delta']:+,.2f} USD")
+c2.metric("Trung bình trượt (SMA)", f"${latest['SMA']:,.2f}")
+c3.metric("Độ biến động (σ)", f"±{latest['STD']:.2f}")
+
+status_text = "🚨 DỊ BIỆT" if latest["Is_Anomaly"] else "BÌNH THƯỜNG"
+c4.metric(
+    "Kiểm định Z-Score", 
+    status_text, 
+    delta=f"Z = {latest['Z_Score']:.2f}"
+)
+
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=df["time"], y=df["Upper_Band"], mode="lines", line=dict(color="rgba(148, 163, 184, 0.4)", width=1), showlegend=False))
-fig.add_trace(go.Scatter(x=df["time"], y=df["Lower_Band"], mode="lines", line=dict(color="rgba(148, 163, 184, 0.4)", width=1), fill='tonexty', fillcolor='rgba(56, 189, 248, 0.12)', name="Vùng tin cậy thống kê"))
-fig.add_trace(go.Scatter(x=df["time"], y=df["price"], mode="markers+lines", marker=dict(size=8, color=np.where(df["Is_Anomaly"], "#ef4444", "#38bdf8")), line=dict(color="#38bdf8", width=1), name="Giá thực tế"))
-
+fig.add_trace(go.Scatter(
+    x=df["Timestamp"], y=df["Upper_Band"],
+    mode="lines",
+    line=dict(color="rgba(148, 163, 184, 0.35)", width=1),
+    showlegend=False
+))
+fig.add_trace(go.Scatter(
+    x=df["Timestamp"], y=df["Lower_Band"],
+    mode="lines",
+    line=dict(color="rgba(148, 163, 184, 0.35)", width=1),
+    fill='tonexty',
+    fillcolor='rgba(56, 189, 248, 0.12)',
+    name="Vùng an toàn thống kê",
+    hoverinfo="skip"
+))
+point_colors = np.where(df["Is_Anomaly"], "#ef4444", "#38bdf8")
+fig.add_trace(go.Scatter(
+    x=df["Timestamp"], y=df["Price"],
+    mode="markers+lines",
+    marker=dict(size=8, color=point_colors, line=dict(width=1.5, color="#ffffff")),
+    line=dict(color="rgba(56, 189, 248, 0.5)", width=1),
+    name="Dữ liệu quan trắc"
+))
 anomalies = df[df["Is_Anomaly"]]
 if not anomalies.empty:
-    fig.add_trace(go.Scatter(x=anomalies["time"], y=anomalies["price"], mode="markers+text", marker=dict(symbol="star", size=14, color="#ef4444"), text=["Dị biệt" for _ in range(len(anomalies))], textposition="top center", name="Điểm dị biệt"))
+    fig.add_trace(go.Scatter(
+        x=anomalies["Timestamp"], y=anomalies["Price"],
+        mode="markers+text",
+        marker=dict(symbol="star", size=15, color="#ef4444"),
+        text=["Dị biệt" for _ in range(len(anomalies))],
+        textposition="top center",
+        name="Anomaly Points"
+    ))
 
-fig.update_layout(template="plotly_dark", height=430, margin=dict(l=10, r=10, t=30, b=20), xaxis=dict(title="Thời gian"), yaxis=dict(title="USD ($)"))
-st.plotly_chart(fig, use_container_width=True)
+fig.update_layout(
+    template="plotly_dark",
+    height=420,
+    margin=dict(l=15, r=15, t=30, b=20),
+    xaxis=dict(title="Mốc thời gian", gridcolor="#1e293b"),
+    yaxis=dict(title="Giá USD ($)", gridcolor="#1e293b"),
+    legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center")
+)
+st.plotly_chart(fig, width='stretch')
 
-# Tự động cập nhật (Real-time loop)
+st.subheader("📋 Bảng kiểm soát dữ liệu thời gian thực (Audit Log)")
+display_df = df[["Timestamp", "Price", "SMA", "STD", "Z_Score", "Is_Anomaly"]].copy()
+display_df["Price"] = display_df["Price"].map("${:,.2f}".format)
+display_df["SMA"] = display_df["SMA"].map("${:,.2f}".format)
+display_df["STD"] = display_df["STD"].map("{:.2f}".format)
+display_df["Z_Score"] = display_df["Z_Score"].map("{:.2f}".format)
+display_df["Is_Anomaly"] = display_df["Is_Anomaly"].map({True: "Dị biệt", False: "Bình thường"})
+
+col_table, col_export = st.columns([0.8, 0.2])
+with col_table:
+    st.dataframe(display_df.iloc[::-1].head(8), width='stretch')
+
+with col_export:
+    st.markdown("**Xuất báo cáo:**")
+    csv_data = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Tải file CSV",
+        data=csv_data,
+        file_name=f"anomaly_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        width='stretch'
+    )
+
 time.sleep(refresh_rate)
 st.rerun()
